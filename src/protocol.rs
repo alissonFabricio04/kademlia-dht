@@ -436,6 +436,63 @@ impl Protocol {
         (None, ret)
     }
 
+    pub fn search_for_rapprochement(&self, k: String) -> Vec<routing::NodeAndDistance> {
+        let mut ret: Vec<routing::NodeAndDistance> = Vec::new();
+        let key = super::key::Key::new(k.clone());
+        let mut queried = HashSet::new();
+
+        let routes = self
+            .routes
+            .lock()
+            .expect("[FAILED] Protocol::search_for_rapprochement --> Failed to acquire mutex on Routes");
+        let mut to_query = BinaryHeap::from(routes.get_closest_nodes(&key, super::K_PARAM));
+        drop(routes);
+
+        for entry in &to_query {
+            queried.insert(entry.clone());
+        }
+
+        while !to_query.is_empty() {
+            let mut joins: Vec<std::thread::JoinHandle<Option<routing::FindValueResult>>> = Vec::new();
+            let mut queries: Vec<routing::NodeAndDistance> = Vec::new();
+            let mut results: Vec<Option<routing::FindValueResult>> = Vec::new();
+
+            for _ in 0..super::ALPHA {
+                match to_query.pop() {
+                    Some(entry) => queries.push(entry),
+                    None => break
+                }
+            }
+
+            for &routing::NodeAndDistance(ref n, _) in &queries {
+                let k_clone = k.clone();
+                let node = n.clone();
+                let protocol = self.clone();
+
+                joins.push(std::thread::spawn(move || protocol.find_value(node, k_clone)));
+            }
+
+            for j in joins {
+                results.push(j.join().expect("[FAILED] Protocol::search_for_rapprochement --> Failed to join thread while searching for value"));
+            }
+
+            for (result, query) in results.into_iter().zip(queries) {       
+                if let Some(routing::FindValueResult::Nodes(entries)) = result {
+                    for entry in entries {
+                        if queried.insert(entry.clone()) {
+                            to_query.push(entry);
+                        }
+                    }
+                }
+                ret.push(query);
+            }
+        }
+        
+        ret.sort_by(|a, b| a.1.cmp(&b.1));
+        ret.truncate(super::K_PARAM);
+        ret
+    }
+
     pub fn put(&self, k: String, v: String) {
         let candidates = self.nodes_lookup(&super::key::Key::new(k.clone()));
 
